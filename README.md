@@ -1,49 +1,97 @@
-# Facebook Video Downloader
+# Facebook Video Downloader | محمّل فيديوهات فيسبوك
 
-Download all videos from a Facebook profile or page using [yt-dlp](https://github.com/yt-dlp/yt-dlp).
+Download all videos from any Facebook profile or page using Playwright + yt-dlp.
 
-## Requirements
+تحميل جميع فيديوهات أي بروفايل أو صفحة على فيسبوك باستخدام Playwright و yt-dlp.
+
+---
+
+## Requirements | المتطلبات
 
 - Python 3.10+
-- yt-dlp (installed automatically on first run, or manually via `pip install yt-dlp`)
+- Internet connection | اتصال بالإنترنت
 
-## Installation
+---
+
+## Installation | التثبيت
 
 ```bash
 pip install -r requirements.txt
+python -m playwright install chromium
 ```
 
-## Usage
+---
 
-### Basic — public profile or page
+## Usage | طريقة الاستخدام
 
-```bash
-python downloader.py "https://www.facebook.com/profile.php?id=100080241908021"
-```
+### 1. Export cookies | تصدير الكوكيز
 
-### Custom output folder
+The program needs your Facebook login cookies to access videos.
 
-```bash
-python downloader.py "https://www.facebook.com/SomePage" -o videos/SomePage
-```
+البرنامج يحتاج كوكيز فيسبوك الخاصة بك للوصول للفيديوهات.
 
-### Private profile (requires login cookies)
+**Steps | الخطوات:**
+1. Install the browser extension **"Get cookies.txt LOCALLY"** on Chrome
+   ثبّت امتداد **"Get cookies.txt LOCALLY"** على Chrome
+2. Open [facebook.com](https://facebook.com) and make sure you are logged in
+   افتح [facebook.com](https://facebook.com) وتأكد أنك مسجّل دخول
+3. Click the extension icon → **Export** → save the file as `cookies.txt` in the project folder
+   اضغط على أيقونة الامتداد ← **Export** ← احفظ الملف باسم `cookies.txt` في مجلد المشروع
 
-Facebook restricts most profile videos to logged-in users.  
-Export your browser cookies to a `cookies.txt` file (Netscape format) using a browser extension such as
-[Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc), then:
+---
 
+### 2. Run the program | تشغيل البرنامج
+
+**Profile | بروفايل شخصي:**
 ```bash
 python downloader.py "https://www.facebook.com/profile.php?id=100080241908021" --cookies cookies.txt
 ```
 
-## Output
+**Page | صفحة:**
+```bash
+python downloader.py "https://www.facebook.com/zadlibraryy" --cookies cookies.txt
+```
 
-Videos are saved in the `downloads/` folder (or the folder you specify with `-o`) as MP4 files.  
-A `.info.json` metadata file is saved next to each video.
+**Custom output folder | تحديد مجلد الحفظ:**
+```bash
+python downloader.py "https://www.facebook.com/zadlibraryy" --cookies cookies.txt -o videos/zad
+```
 
-## Notes
+**More scrolls for large pages | زيادة السكرول لصفحات كبيرة:**
+```bash
+python downloader.py "https://www.facebook.com/zadlibraryy" --cookies cookies.txt --scrolls 80
+```
 
-- Only **public** videos are accessible without a cookies file.
-- Facebook may throttle or block automated downloads — use responsibly.
-- Downloaded videos are for personal use only; respect copyright and Facebook's Terms of Service.
+---
+
+## Options | الخيارات
+
+| Option | Description | الوصف |
+|--------|-------------|-------|
+| `url` | Facebook profile or page URL | رابط البروفايل أو الصفحة |
+| `--cookies` | Path to cookies.txt file | مسار ملف الكوكيز |
+| `-o` | Output folder (default: `downloads/`) | مجلد الحفظ (افتراضي: `downloads/`) |
+| `--scrolls` | Number of scroll attempts (default: 30) | عدد مرات السكرول (افتراضي: 30) |
+
+---
+
+## How it works | كيف يعمل
+
+1. Opens the profile/page Videos tab using a headless browser with your cookies
+   يفتح تبويب الفيديوهات باستخدام متصفح خفي مع كوكيزك
+2. Scrolls down automatically to load all videos
+   يسكرول تلقائياً لتحميل كل الفيديوهات
+3. Collects all video URLs
+   يجمع روابط جميع الفيديوهات
+4. Downloads each video with yt-dlp in the best available quality
+   يحمّل كل فيديو بأعلى جودة متاحة
+
+---
+
+## Notes | ملاحظات
+
+- Videos are saved as MP4 files | الفيديوهات تُحفظ بصيغة MP4
+- The `cookies.txt` file expires after some time — re-export it if you see login errors
+  ملف `cookies.txt` ينتهي مفعوله بعد فترة — أعد تصديره إذا ظهرت أخطاء تسجيل دخول
+- Use this tool responsibly and respect Facebook's Terms of Service
+  استخدم الأداة بشكل مسؤول واحترم شروط خدمة فيسبوك
