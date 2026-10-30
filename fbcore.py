@@ -210,7 +210,7 @@ def download_videos(video_urls, output_dir, cookies_file=None, log=print,
 _COLLECT_JS = """
 () => {
   const out = [];
-  const JUNK = /^(like|comment|share|send|reply|write a comment|أعجبني|تعليق|مشاركة|إرسال|اكتب تعليقا|اكتب تعليقاً|\\d+)$/i;
+  const JUNK = /^(like|comment|share|send|reply|write a comment|أعجبني|تعليق|مشاركة|إرسال|اكتب تعليقا|اكتب تعليقاً|see more|عرض المزيد|…|\\d+)$/i;
   document.querySelectorAll('[role=article]').forEach(el => {
     if (el.parentElement && el.parentElement.closest('[role=article]')) return; // skip comments
     const link = el.querySelector('a[href*="/posts/"], a[href*="story_fbid"], a[href*="/videos/"], a[href*="/photos/"], a[href*="permalink"], a[href*="/reel/"]');
@@ -233,9 +233,22 @@ _COLLECT_JS = """
 }
 """
 
+_EXPAND_JS = """
+() => {
+  const re = /^(…\\s*)?(see more|عرض المزيد|شاهد المزيد|اقرأ المزيد)$/i;
+  let n = 0;
+  document.querySelectorAll('[role=article] [role=button], [role=article] div[tabindex="0"]').forEach(b => {
+    if (re.test((b.innerText || '').trim())) { b.click(); n++; }
+  });
+  return n;
+}
+"""
+
+_SEE_MORE = re.compile(r"[\s…\.]*(see more|عرض المزيد|شاهد المزيد)\s*$", re.I)
+
 _CSS = """
 body{font-family:Segoe UI,Tahoma,Arial,sans-serif;background:#f0f2f5;margin:0;color:#1c1e21}
-.wrap{max-width:680px;margin:0 auto;padding:16px}
+.wrap{max-width:920px;margin:0 auto;padding:16px}
 h1{font-size:22px}.meta{color:#65676b;margin-bottom:16px}
 .post{background:#fff;border-radius:8px;box-shadow:0 1px 2px rgba(0,0,0,.2);padding:14px;margin-bottom:16px}
 .author{font-weight:600}.when{color:#65676b;font-size:13px}
@@ -295,6 +308,8 @@ def archive_page(page_url, output_dir, cookies_file=None, max_scrolls=40, headle
             if stop.is_set():
                 break
             try:
+                if page.evaluate(_EXPAND_JS):  # open every truncated post ("See more")
+                    page.wait_for_timeout(700)
                 for item in page.evaluate(_COLLECT_JS):
                     old = posts.get(item["key"])
                     if old:
@@ -353,7 +368,7 @@ def archive_page(page_url, output_dir, cookies_file=None, max_scrolls=40, headle
         cards.append(
             f'<div class="post" dir="auto"><div class="author">{esc(p["author"])}</div>'
             f'<div class="when">{esc(p["when"])}{orig}</div>'
-            f'<div class="text">{esc(p["text"])}</div>{imgs}</div>')
+            f'<div class="text">{esc(_SEE_MORE.sub("", p["text"]).strip())}</div>{imgs}</div>')
     index = root / "index.html"
     index.write_text(
         '<!doctype html><html><head><meta charset="utf-8">'
