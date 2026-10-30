@@ -10,6 +10,15 @@ CLI: `python downloader.py URL --cookies cookies.txt --offline` (add `--no-video
 
 ---
 
+## Install as a Windows app | تثبيت كبرنامج ويندوز
+
+Download `Setup.exe` from the repo's **Releases** page (built automatically by GitHub Actions when a `v*` tag is pushed), run it, done — no Python needed. It uses the Microsoft Edge/Chrome already on your PC.
+حمّل `Setup.exe` من صفحة **Releases** وشغّله — لا يحتاج بايثون، ويستخدم Edge أو Chrome الموجود في جهازك.
+
+Build locally | البناء محلياً: `pyinstaller --windowed --name FacebookMediaDownloader --collect-all playwright --collect-all sv_ttk --collect-all yt_dlp app.py`, then compile `installer/installer.iss` with Inno Setup.
+
+---
+
 Download all videos from any Facebook profile or page using Playwright + yt-dlp.
 
 تحميل جميع فيديوهات أي بروفايل أو صفحة على فيسبوك باستخدام Playwright و yt-dlp.

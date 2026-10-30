@@ -1,8 +1,9 @@
-"""Facebook Media Downloader — desktop GUI (Tkinter, no extra dependencies)."""
+"""Facebook Media Downloader — desktop GUI (Tkinter + sv-ttk theme)."""
 
 import json
 import os
 import queue
+import re
 import threading
 import tkinter as tk
 import webbrowser
@@ -11,91 +12,141 @@ from tkinter import filedialog, messagebox, ttk
 
 import fbcore
 
+try:
+    import sv_ttk
+except ImportError:  # theme is cosmetic; fall back to the default ttk look
+    sv_ttk = None
+
 SETTINGS = Path.home() / ".fbdl_settings.json"
+FONT = ("Segoe UI", 10)
+
+_AR_RUN = re.compile(r"[؀-ۿ][؀-ۿ ]*[؀-ۿ]|[؀-ۿ]")
+
+
+def rtl(text: str) -> str:
+    """Tk does no bidi reordering, so Arabic words would show last-to-first; reverse each Arabic run."""
+    return _AR_RUN.sub(lambda m: " ".join(reversed(m.group(0).split(" "))), text)
+
+
+MODES = [
+    ("videos", "🎬  Download all videos", "تحميل كل الفيديوهات"),
+    ("offline", "🗂  Save page offline", "حفظ الصفحة للتصفح بدون نت"),
+    ("both", "⚡  Both", "الاثنان معاً"),
+]
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Facebook Media Downloader | محمّل وسائط فيسبوك")
-        self.geometry("820x640")
-        self.minsize(700, 540)
+        self.geometry("880x720")
+        self.minsize(760, 640)
         self.q: queue.Queue = queue.Queue()
         self.stop_ev = threading.Event()
-        self.worker: threading.Thread | None = None
         self.last_index: Path | None = None
 
         s = self._load()
         self.url = tk.StringVar()
         self.cookies = tk.StringVar(value=s.get("cookies", ""))
-        self.outdir = tk.StringVar(value=s.get("outdir", str(Path.cwd() / "downloads")))
+        self.outdir = tk.StringVar(value=s.get("outdir", str(Path.home() / "Downloads" / "FacebookMedia")))
         self.scrolls = tk.IntVar(value=s.get("scrolls", 0))
         self.show_browser = tk.BooleanVar(value=s.get("show_browser", False))
+        self.dark = tk.BooleanVar(value=s.get("dark", False))
         self.mode = tk.StringVar(value="videos")
         self.with_videos = tk.BooleanVar(value=True)
+        self.status = tk.StringVar(value=rtl("Ready | جاهز"))
+
+        if sv_ttk:
+            sv_ttk.set_theme("dark" if self.dark.get() else "light")
+        style = ttk.Style()
+        style.configure(".", font=FONT)
+        style.configure("Title.TLabel", font=("Segoe UI Semibold", 18))
+        style.configure("Sub.TLabel", foreground="#6b7280")
+        style.configure("Status.TLabel", font=("Segoe UI Semibold", 10))
 
         self._build()
+        self._fix_arabic(self)
         self._enable_clipboard_keys()
         self.after(100, self._pump)
 
     # ── UI ──
     def _build(self):
-        pad = {"padx": 10, "pady": 4}
-        top = ttk.LabelFrame(self, text="Target | الهدف")
-        top.pack(fill="x", **pad)
-        top.columnconfigure(1, weight=1)
+        root = ttk.Frame(self, padding=18)
+        root.pack(fill="both", expand=True)
 
-        ttk.Label(top, text="Profile / Page URL | الرابط").grid(row=0, column=0, sticky="w", padx=6, pady=4)
-        ttk.Entry(top, textvariable=self.url).grid(row=0, column=1, sticky="ew", padx=6)
-        ttk.Button(top, text="Paste | لصق", command=lambda: self.url.set(self._clip())).grid(row=0, column=2, padx=6)
+        head = ttk.Frame(root)
+        head.pack(fill="x")
+        ttk.Label(head, text="Facebook Media Downloader", style="Title.TLabel").pack(side="left")
+        ttk.Checkbutton(head, text="Dark | داكن", style="Switch.TCheckbutton" if sv_ttk else "TCheckbutton",
+                        variable=self.dark, command=self._toggle_theme).pack(side="right")
+        ttk.Label(root, text="Videos or a whole page for offline browsing | فيديوهات أو صفحة كاملة بدون إنترنت",
+                  style="Sub.TLabel").pack(anchor="w", pady=(0, 12))
 
-        ttk.Label(top, text="cookies.txt").grid(row=1, column=0, sticky="w", padx=6, pady=4)
-        ttk.Entry(top, textvariable=self.cookies).grid(row=1, column=1, sticky="ew", padx=6)
-        ttk.Button(top, text="Browse…", command=self._pick_cookies).grid(row=1, column=2, padx=6)
+        # target
+        card = ttk.LabelFrame(root, text="  Target | الهدف  ", padding=12)
+        card.pack(fill="x", pady=(0, 10))
+        card.columnconfigure(1, weight=1)
+        self._row(card, 0, "Page / profile URL | الرابط", self.url,
+                  ("Paste | لصق", lambda: self.url.set(self._clip())))
+        self._row(card, 1, "cookies.txt", self.cookies, ("Browse…", self._pick_cookies))
+        self._row(card, 2, "Save to | مجلد الحفظ", self.outdir, ("Browse…", self._pick_out))
 
-        ttk.Label(top, text="Output folder | المجلد").grid(row=2, column=0, sticky="w", padx=6, pady=4)
-        ttk.Entry(top, textvariable=self.outdir).grid(row=2, column=1, sticky="ew", padx=6)
-        ttk.Button(top, text="Browse…", command=self._pick_out).grid(row=2, column=2, padx=6)
+        # task
+        card = ttk.LabelFrame(root, text="  What to do | المهمة  ", padding=12)
+        card.pack(fill="x", pady=(0, 10))
+        for val, en, ar in MODES:
+            ttk.Radiobutton(card, text=f"{en}   —   {ar}", variable=self.mode, value=val).pack(anchor="w", pady=3)
+        ttk.Separator(card).pack(fill="x", pady=8)
+        row = ttk.Frame(card)
+        row.pack(fill="x")
+        ttk.Label(row, text="Max scrolls (0 = whole page) | السكرول (0 = كاملة)").pack(side="left")
+        ttk.Spinbox(row, from_=0, to=100000, width=7, textvariable=self.scrolls).pack(side="left", padx=8)
+        row2 = ttk.Frame(card)
+        row2.pack(fill="x", pady=(8, 0))
+        ttk.Checkbutton(row2, text="Show browser | إظهار المتصفح", variable=self.show_browser).pack(side="left")
+        ttk.Checkbutton(row2, text="Include videos in offline copy | الفيديوهات ضمن النسخة",
+                        variable=self.with_videos).pack(side="left", padx=20)
 
-        opt = ttk.LabelFrame(self, text="What to do | المهمة")
-        opt.pack(fill="x", **pad)
-        ttk.Radiobutton(opt, text="Download all videos | تحميل كل الفيديوهات",
-                        variable=self.mode, value="videos").pack(anchor="w", padx=8, pady=2)
-        ttk.Radiobutton(opt, text="Save page offline (browse without internet) | حفظ الصفحة للتصفح بدون نت",
-                        variable=self.mode, value="offline").pack(anchor="w", padx=8, pady=2)
-        ttk.Radiobutton(opt, text="Both | الاثنان معاً",
-                        variable=self.mode, value="both").pack(anchor="w", padx=8, pady=2)
-
-        row = ttk.Frame(opt)
-        row.pack(fill="x", padx=8, pady=4)
-        ttk.Label(row, text="Max scrolls (0 = whole page) | عدد السكرول (0 = الصفحة كاملة)").pack(side="left")
-        ttk.Spinbox(row, from_=0, to=100000, width=6, textvariable=self.scrolls).pack(side="left", padx=6)
-        ttk.Checkbutton(row, text="Show browser | إظهار المتصفح",
-                        variable=self.show_browser).pack(side="left", padx=12)
-        ttk.Checkbutton(row, text="Include videos in offline copy | الفيديوهات ضمن النسخة",
-                        variable=self.with_videos).pack(side="left", padx=12)
-
-        btns = ttk.Frame(self)
-        btns.pack(fill="x", **pad)
-        self.start_btn = ttk.Button(btns, text="▶ Start | ابدأ", command=self._start)
-        self.start_btn.pack(side="left")
-        self.stop_btn = ttk.Button(btns, text="■ Stop | إيقاف", command=self._stop, state="disabled")
-        self.stop_btn.pack(side="left", padx=6)
+        # actions
+        btns = ttk.Frame(root)
+        btns.pack(fill="x", pady=(2, 8))
+        self.start_btn = ttk.Button(btns, text="▶  Start | ابدأ", style="Accent.TButton", command=self._start)
+        self.start_btn.pack(side="left", ipadx=14, ipady=3)
+        self.stop_btn = ttk.Button(btns, text="■  Stop | إيقاف", command=self._stop, state="disabled")
+        self.stop_btn.pack(side="left", padx=8, ipady=3)
         self.open_btn = ttk.Button(btns, text="Open offline copy | فتح النسخة",
                                    command=self._open_offline, state="disabled")
-        self.open_btn.pack(side="right")
-        ttk.Button(btns, text="Open folder | فتح المجلد", command=self._open_folder).pack(side="right", padx=6)
+        self.open_btn.pack(side="right", ipady=3)
+        ttk.Button(btns, text="Open folder | فتح المجلد", command=self._open_folder).pack(side="right", padx=8, ipady=3)
 
-        self.bar = ttk.Progressbar(self, mode="determinate")
-        self.bar.pack(fill="x", **pad)
+        ttk.Label(root, textvariable=self.status, style="Status.TLabel").pack(anchor="w")
+        self.bar = ttk.Progressbar(root, mode="determinate")
+        self.bar.pack(fill="x", pady=(4, 8))
 
-        logf = ttk.Frame(self)
-        logf.pack(fill="both", expand=True, **pad)
-        self.log_box = tk.Text(logf, height=14, wrap="word", state="disabled", font=("Consolas", 9))
+        logf = ttk.Frame(root)
+        logf.pack(fill="both", expand=True)
+        self.log_box = tk.Text(logf, height=10, wrap="word", state="disabled", font=("Consolas", 9),
+                               relief="flat", padx=8, pady=6)
         sb = ttk.Scrollbar(logf, command=self.log_box.yview)
         self.log_box.configure(yscrollcommand=sb.set)
         self.log_box.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
+
+    def _fix_arabic(self, widget):
+        for w in widget.winfo_children():
+            if isinstance(w, (ttk.Label, ttk.Button, ttk.Checkbutton, ttk.Radiobutton, ttk.LabelFrame)):
+                w.configure(text=rtl(str(w.cget("text"))))
+            self._fix_arabic(w)
+
+    def _row(self, parent, r, label, var, button):
+        ttk.Label(parent, text=label).grid(row=r, column=0, sticky="w", padx=(0, 12), pady=5)
+        ttk.Entry(parent, textvariable=var).grid(row=r, column=1, sticky="ew", pady=5)
+        ttk.Button(parent, text=button[0], command=button[1]).grid(row=r, column=2, padx=(8, 0), pady=5)
+
+    def _toggle_theme(self):
+        if sv_ttk:
+            sv_ttk.set_theme("dark" if self.dark.get() else "light")
+        self._save()
 
     # ── clipboard (Ctrl+V/C/X fail in Tk when an Arabic layout is active, so match by keycode) ──
     def _clip(self) -> str:
@@ -136,9 +187,8 @@ class App(tk.Tk):
     def _save(self):
         try:
             SETTINGS.write_text(json.dumps({
-                "cookies": self.cookies.get(), "outdir": self.outdir.get(),
-                "scrolls": self.scrolls.get(), "show_browser": self.show_browser.get()}),
-                encoding="utf-8")
+                "cookies": self.cookies.get(), "outdir": self.outdir.get(), "scrolls": self.scrolls.get(),
+                "show_browser": self.show_browser.get(), "dark": self.dark.get()}), encoding="utf-8")
         except Exception:
             pass
 
@@ -176,19 +226,20 @@ class App(tk.Tk):
                 kind, val = self.q.get_nowait()
                 if kind == "log":
                     self.log_box.configure(state="normal")
-                    self.log_box.insert("end", val + "\n")
+                    self.log_box.insert("end", rtl(val) + "\n")
                     self.log_box.see("end")
                     self.log_box.configure(state="disabled")
+                    self.status.set(rtl(val[:110]))
                 elif kind == "progress":
                     done, total = val
                     if total:
                         self.bar.stop()
                         self.bar.configure(mode="determinate", maximum=total, value=done)
-                    else:  # unlimited scrolling: no known end, show a busy bar
-                        if str(self.bar.cget("mode")) != "indeterminate":
-                            self.bar.configure(mode="indeterminate")
-                            self.bar.start(15)
+                    elif str(self.bar.cget("mode")) != "indeterminate":  # unlimited scroll: busy bar
+                        self.bar.configure(mode="indeterminate")
+                        self.bar.start(15)
                 elif kind == "finished":
+                    self.bar.stop()
                     self.start_btn.configure(state="normal")
                     self.stop_btn.configure(state="disabled")
                     if self.last_index:
@@ -214,8 +265,7 @@ class App(tk.Tk):
         # read Tk variables here: they must not be touched from the worker thread
         opts = dict(out=self.outdir.get(), mode=self.mode.get(), headless=not self.show_browser.get(),
                     scrolls=self.scrolls.get(), with_videos=self.with_videos.get())
-        self.worker = threading.Thread(target=self._run, args=(url, cookies, opts), daemon=True)
-        self.worker.start()
+        threading.Thread(target=self._run, args=(url, cookies, opts), daemon=True).start()
 
     def _stop(self):
         self.stop_ev.set()

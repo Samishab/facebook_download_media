@@ -37,10 +37,15 @@ def _noop(*_a, **_k):
 
 # ── dependency helpers ─────────────────────────────────────────────────────────
 
+FROZEN = getattr(sys, "frozen", False)  # running from the PyInstaller build
+
+
 def ensure_yt_dlp(log=print):
     try:
-        subprocess.run([sys.executable, "-m", "yt_dlp", "--version"], capture_output=True, check=True)
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        import yt_dlp  # noqa: F401
+    except ImportError:
+        if FROZEN:
+            raise
         log("Installing yt-dlp...")
         subprocess.run([sys.executable, "-m", "pip", "install", "yt-dlp"], check=True)
 
@@ -49,9 +54,30 @@ def ensure_playwright(log=print):
     try:
         from playwright.sync_api import sync_playwright  # noqa: F401
     except ImportError:
+        if FROZEN:
+            raise
         log("Installing playwright...")
         subprocess.run([sys.executable, "-m", "pip", "install", "playwright"], check=True)
-    subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], capture_output=True)
+    if not FROZEN:  # the installed app uses the Edge/Chrome already on the machine
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], capture_output=True)
+
+
+def _find_ffmpeg() -> str | None:
+    import shutil
+    local = Path(sys.executable if FROZEN else __file__).resolve().parent / "ffmpeg.exe"
+    return str(local) if local.exists() else shutil.which("ffmpeg")
+
+
+def _launch(pw, headless: bool):
+    """Bundled Chromium when present, otherwise the system Edge/Chrome."""
+    tries = ([{}] if not FROZEN else []) + [{"channel": "msedge"}, {"channel": "chrome"}]
+    err = None
+    for kw in tries:
+        try:
+            return pw.chromium.launch(headless=headless, **kw)
+        except Exception as e:
+            err = e
+    raise RuntimeError(f"No browser available — install Microsoft Edge or Google Chrome. ({err})")
 
 
 # ── cookies ────────────────────────────────────────────────────────────────────
@@ -91,7 +117,7 @@ class BrowserSession:
         ensure_playwright(self.log)
         from playwright.sync_api import sync_playwright
         self._pw = sync_playwright().start()
-        self.browser = self._pw.chromium.launch(headless=self.headless)
+        self.browser = _launch(self._pw, self.headless)
         self.context = self.browser.new_context(user_agent=USER_AGENT, locale="en-US",
                                                 viewport={"width": 1280, "height": 900})
         if self.cookies_file:
@@ -168,10 +194,21 @@ def scrape_video_urls(profile_url, cookies_file=None, max_scrolls=30, headless=T
 
 def download_videos(video_urls, output_dir, cookies_file=None, log=print,
                     progress=_noop, stop=None) -> list[str]:
+    import yt_dlp
     stop = stop or threading.Event()
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     log(f"Downloading {len(video_urls)} videos to {out.resolve()}")
+    ffmpeg = _find_ffmpeg()
+    if not ffmpeg:
+        log("ffmpeg not found — using single-file formats (lower quality on some videos).")
+
+    class _Log:
+        def debug(self, m): pass
+        def info(self, m): pass
+        def warning(self, m): pass
+        def error(self, m): log(str(m))
+
     failed = []
     for idx, url in enumerate(video_urls, 1):
         if stop.is_set():
@@ -179,30 +216,40 @@ def download_videos(video_urls, output_dir, cookies_file=None, log=print,
             break
         progress(idx - 1, len(video_urls))
         log(f"[{idx}/{len(video_urls)}] {url}")
-        cmd = [sys.executable, "-m", "yt_dlp", "--ignore-errors", "--no-warnings", "--newline",
-               "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-               "--merge-output-format", "mp4", "--concurrent-fragments", "4",
-               "--output", str(out / "%(uploader)s - %(title)s [%(id)s].%(ext)s")]
-        if cookies_file:
-            cmd += ["--cookies", cookies_file]
-        cmd.append(url)
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, encoding="utf-8", errors="replace",
-                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        last = ""
-        for line in proc.stdout:
-            line = line.strip()
-            if line.startswith("[download]") and "%" in line:
-                last = line  # keep only the latest progress line
-            elif line:
-                log(line)
+        step = {"last": -10}
+
+        def hook(d):
             if stop.is_set():
-                proc.terminate()
-                break
-        proc.wait()
-        if last:
-            log(last)
-        if proc.returncode != 0 and not stop.is_set():
+                raise yt_dlp.utils.DownloadCancelled()
+            if d.get("status") == "downloading":
+                try:
+                    pct = float(str(d.get("_percent_str", "0")).strip().rstrip("%"))
+                except ValueError:
+                    return
+                if pct - step["last"] >= 10:
+                    step["last"] = pct
+                    log(f"   {pct:.0f}%  {str(d.get('_speed_str', '')).strip()}")
+
+        opts = {
+            "outtmpl": str(out / "%(uploader)s - %(title)s [%(id)s].%(ext)s"),
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" if ffmpeg else "best[ext=mp4]/best",
+            "merge_output_format": "mp4", "concurrent_fragment_downloads": 4,
+            "noprogress": True, "quiet": True, "no_warnings": True,
+            "logger": _Log(), "progress_hooks": [hook],
+        }
+        if ffmpeg:
+            opts["ffmpeg_location"] = ffmpeg
+        if cookies_file:
+            opts["cookiefile"] = cookies_file
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                if ydl.download([url]) != 0:
+                    failed.append(url)
+        except yt_dlp.utils.DownloadCancelled:
+            log("Stopped.")
+            break
+        except Exception as e:
+            log(f"   failed: {e}")
             failed.append(url)
     progress(len(video_urls), len(video_urls))
     log(f"Done: {len(video_urls) - len(failed)}/{len(video_urls)} downloaded.")
