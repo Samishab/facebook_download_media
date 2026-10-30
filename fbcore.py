@@ -274,6 +274,7 @@ def archive_page(page_url, output_dir, cookies_file=None, max_scrolls=40, headle
         page.wait_for_timeout(4_000)
         try:
             page.keyboard.press("Escape")  # dismiss a login nag if shown
+            page.locator('[aria-label="Close"], [aria-label="إغلاق"]').first.click(timeout=2_000)
         except Exception:
             pass
 
@@ -299,6 +300,16 @@ def archive_page(page_url, output_dir, cookies_file=None, max_scrolls=40, headle
                 log("No new posts after 4 scrolls — done scrolling.")
                 break
         page.wait_for_timeout(1_500)  # let the last images finish
+        if not posts:
+            try:
+                page.screenshot(path=str(root / "debug.png"))
+                (root / "debug.html").write_text(page.content(), encoding="utf-8")
+                log(f"Page title: {page.title()!r} | url: {page.url}")
+                log(f"role=article count: {page.locator('[role=article]').count()}, "
+                    f"login form: {page.locator('input[name=pass]').count() > 0}")
+                log(f"Debug files saved in {root.resolve()} (debug.png, debug.html)")
+            except Exception as e:
+                log(f"debug dump failed: {e}")
         head = page.evaluate("document.head.innerHTML")
         html_cls = page.evaluate("document.documentElement.className")
         body_cls = page.evaluate("document.body.className")
