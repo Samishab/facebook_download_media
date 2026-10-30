@@ -205,33 +205,50 @@ def download_videos(video_urls, output_dir, cookies_file=None, log=print,
 # ── offline page archive ───────────────────────────────────────────────────────
 
 # Facebook virtualises its feed (posts far above the viewport are emptied), so we
-# snapshot every top-level post on each scroll step instead of reading the DOM once.
+# snapshot every top-level post on each scroll step. Its CSS does not survive being
+# copied out of the site, so we extract text/images/links and render our own layout.
 _COLLECT_JS = """
 () => {
   const out = [];
+  const JUNK = /^(like|comment|share|send|reply|write a comment|أعجبني|تعليق|مشاركة|إرسال|اكتب تعليقا|اكتب تعليقاً|\\d+)$/i;
   document.querySelectorAll('[role=article]').forEach(el => {
     if (el.parentElement && el.parentElement.closest('[role=article]')) return; // skip comments
     const link = el.querySelector('a[href*="/posts/"], a[href*="story_fbid"], a[href*="/videos/"], a[href*="/photos/"], a[href*="permalink"], a[href*="/reel/"]');
-    const text = (el.innerText || '').trim().slice(0, 300);
-    if (!link && !text) return;
-    const clone = el.cloneNode(true);  // make src/href absolute so they match the captured files
-    const src = el.querySelectorAll('[src]'), dst = clone.querySelectorAll('[src]');
-    src.forEach((n, i) => { if (n.src) dst[i].setAttribute('src', n.src); });
-    out.push({key: link ? link.href.split('&__cft__')[0].split('?__cft__')[0] : text,
-              html: clone.outerHTML,
+    const msg = el.querySelector('[data-ad-comet-preview="message"], [data-ad-preview="message"]');
+    let text = msg ? msg.innerText : (el.innerText || '').split('\\n').filter(l => l.trim().length > 1 && !JUNK.test(l.trim())).join('\\n');
+    text = text.trim();
+    const images = [...el.querySelectorAll('img')]
+      .filter(i => (i.naturalWidth >= 150 || i.width >= 150) && i.src.startsWith('http'))
+      .map(i => i.src);
+    if (!text && !images.length) return;
+    const url = link ? link.href.split('&__cft__')[0].split('?__cft__')[0] : '';
+    const author = el.querySelector('h2, h3, h4');
+    out.push({key: url || text.slice(0, 200), link: url,
+              author: author ? author.innerText.trim() : '',
+              when: link ? link.innerText.trim().slice(0, 40) : '',
+              text, images,
               videos: [...el.querySelectorAll('a[href]')].map(a => a.href)});
   });
   return out;
 }
 """
 
-_URL_RE = re.compile(r"""https?://(?:(?!&quot;|&#39;|&#x27;)[^\s"'<>)\\])+""")
+_CSS = """
+body{font-family:Segoe UI,Tahoma,Arial,sans-serif;background:#f0f2f5;margin:0;color:#1c1e21}
+.wrap{max-width:680px;margin:0 auto;padding:16px}
+h1{font-size:22px}.meta{color:#65676b;margin-bottom:16px}
+.post{background:#fff;border-radius:8px;box-shadow:0 1px 2px rgba(0,0,0,.2);padding:14px;margin-bottom:16px}
+.author{font-weight:600}.when{color:#65676b;font-size:13px}
+.text{white-space:pre-wrap;line-height:1.6;margin:10px 0;font-size:16px}
+.post img{max-width:100%;border-radius:6px;margin-top:8px;display:block}
+a{color:#1877f2;text-decoration:none}
+"""
 
 
 def _ext_for(url: str, ctype: str) -> str:
     ext = mimetypes.guess_extension((ctype or "").split(";")[0].strip()) or ""
     if ext in (".jpe", ""):
-        ext = Path(urlparse(url).path).suffix[:6] or (".jpg" if "image" in (ctype or "") else "")
+        ext = Path(urlparse(url).path).suffix[:6] or ".jpg"
     return ".jpg" if ext == ".jpe" else ext
 
 
@@ -243,26 +260,21 @@ def archive_page(page_url, output_dir, cookies_file=None, max_scrolls=40, headle
     assets = root / "assets"
     assets.mkdir(parents=True, exist_ok=True)
 
-    url_map: dict[str, str] = {}      # remote url -> file name in assets/
-    css_files: dict[str, bytes] = {}  # file name -> css bytes (rewritten at the end)
-    css_urls: dict[str, str] = {}     # file name -> original css url
-    posts: dict[str, str] = {}        # key -> outerHTML, insertion-ordered
+    url_map: dict[str, str] = {}      # remote image url -> file name in assets/
+    posts: dict[str, dict] = {}       # key -> post data, insertion-ordered
     video_links: set[str] = set()
 
     def on_response(resp):
         try:
-            rtype = resp.request.resource_type
             url = resp.url
-            if rtype not in ("image", "stylesheet", "font") or resp.status != 200 or url in url_map:
+            if resp.request.resource_type != "image" or resp.status != 200 or url in url_map:
                 return
             body = resp.body()
+            if len(body) < 3_000:  # icons / emoji / tracking pixels
+                return
             name = hashlib.sha1(url.encode()).hexdigest()[:20] + _ext_for(url, resp.headers.get("content-type"))
+            (assets / name).write_bytes(body)
             url_map[url] = name
-            if rtype == "stylesheet":
-                css_files[name] = body
-                css_urls[name] = url
-            else:
-                (assets / name).write_bytes(body)
         except Exception:
             pass
 
@@ -284,14 +296,17 @@ def archive_page(page_url, output_dir, cookies_file=None, max_scrolls=40, headle
                 break
             try:
                 for item in page.evaluate(_COLLECT_JS):
-                    old = posts.get(item["key"], "")
-                    if len(item["html"]) >= len(old):
-                        posts[item["key"]] = item["html"]
+                    old = posts.get(item["key"])
+                    if old:
+                        item["images"] = list(dict.fromkeys(old["images"] + item["images"]))
+                        if len(old["text"]) > len(item["text"]):
+                            item["text"] = old["text"]
+                    posts[item["key"]] = item
                     video_links.update(l for l in item["videos"] if any(h in l for h in VIDEO_HINTS))
             except Exception as e:
                 log(f"collect warning: {e}")
             progress(i + 1, max_scrolls)
-            log(f"Scroll {i + 1}/{max_scrolls} — {len(posts)} posts, {len(url_map)} files")
+            log(f"Scroll {i + 1}/{max_scrolls} — {len(posts)} posts, {len(url_map)} images")
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             page.wait_for_timeout(2_500)
             no_change = no_change + 1 if len(posts) == prev else 0
@@ -300,6 +315,7 @@ def archive_page(page_url, output_dir, cookies_file=None, max_scrolls=40, headle
                 log("No new posts after 4 scrolls — done scrolling.")
                 break
         page.wait_for_timeout(1_500)  # let the last images finish
+        title = page.title() or _slug(page_url)
         if not posts:
             try:
                 page.screenshot(path=str(root / "debug.png"))
@@ -310,38 +326,9 @@ def archive_page(page_url, output_dir, cookies_file=None, max_scrolls=40, headle
                 log(f"Debug files saved in {root.resolve()} (debug.png, debug.html)")
             except Exception as e:
                 log(f"debug dump failed: {e}")
-        head = page.evaluate("document.head.innerHTML")
-        html_cls = page.evaluate("document.documentElement.className")
-        body_cls = page.evaluate("document.body.className")
-        title = page.title() or _slug(page_url)
 
     if not posts:
         raise RuntimeError("No posts found. Check that the page is public or that your cookies are valid.")
-
-    # CSS: rewrite url() to sibling files in assets/
-    def css_sub(base):
-        def repl(m):
-            full = urljoin(base, m.group(1).strip("'\" "))
-            return f"url({url_map[full]})" if full in url_map else m.group(0)
-        return repl
-
-    for name, data in css_files.items():
-        text = data.decode("utf-8", errors="ignore")
-        text = re.sub(r"url\(\s*([^)]+?)\s*\)", css_sub(css_urls[name]), text)
-        (assets / name).write_text(text, encoding="utf-8")
-
-    def rewrite(text: str) -> str:
-        def repl(m):
-            raw = m.group(0)
-            u = htmllib.unescape(raw).rstrip(",;")
-            return f"assets/{url_map[u]}" if u in url_map else raw
-        return _URL_RE.sub(repl, text)
-
-    head = re.sub(r"<script\b.*?</script>", "", head, flags=re.S | re.I)
-    head = re.sub(r"<link[^>]+rel=\"(?:preload|prefetch|dns-prefetch|preconnect)\"[^>]*>", "", head, flags=re.I)
-    body = "\n".join(posts.values())
-    body = re.sub(r"<script\b.*?</script>", "", body, flags=re.S | re.I)
-    body = re.sub(r"\son\w+=\"[^\"]*\"", "", body)  # inline handlers
 
     videos_note = ""
     if with_videos and video_links and not stop.is_set():
@@ -349,28 +336,31 @@ def archive_page(page_url, output_dir, cookies_file=None, max_scrolls=40, headle
         download_videos(sorted(video_links), root / "videos", cookies_file, log, progress, stop)
         vids = sorted((root / "videos").glob("*.mp4"))
         if vids:
-            videos_note = '<a href="videos.html">▶ Videos (%d)</a>' % len(vids)
-            items = "".join(f'<li><a href="videos/{v.name}">{htmllib.escape(v.name)}</a><br>'
-                            f'<video controls preload="none" src="videos/{v.name}" width="480"></video></li>'
+            videos_note = ' · <a href="videos.html">▶ Videos (%d)</a>' % len(vids)
+            items = "".join(f'<li class="post"><a href="videos/{v.name}">{htmllib.escape(v.name)}</a>'
+                            f'<video controls preload="none" src="videos/{v.name}" style="width:100%"></video></li>'
                             for v in vids)
             (root / "videos.html").write_text(
-                '<!doctype html><meta charset="utf-8"><title>Videos</title>'
-                '<body style="font-family:sans-serif;max-width:720px;margin:auto"><h2>Videos</h2>'
-                f'<p><a href="index.html">← Back</a></p><ul style="list-style:none;padding:0">{items}</ul>',
-                encoding="utf-8")
+                f'<!doctype html><meta charset="utf-8"><title>Videos</title><style>{_CSS}</style>'
+                f'<div class="wrap"><h1>Videos</h1><p><a href="index.html">← Back</a></p>'
+                f'<ul style="list-style:none;padding:0">{items}</ul></div>', encoding="utf-8")
 
-    page_html = (
-        f'<!doctype html><html class="{html_cls}"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>{htmllib.escape(title)}</title>{rewrite(head)}"
-        "<style>body{overflow:auto!important}.__off{max-width:720px;margin:0 auto;padding:12px}"
-        ".__off>[role=article]{margin-bottom:16px}</style></head>"
-        f'<body class="{body_cls}"><div class="__off">'
-        f'<h2 dir="auto">{htmllib.escape(title)}</h2>'
-        f'<p>{len(posts)} posts · saved offline · <a href="{htmllib.escape(page_url)}">original</a> {videos_note}</p>'
-        f"{rewrite(body)}</div></body></html>"
-    )
+    esc = htmllib.escape
+    cards = []
+    for p in posts.values():
+        imgs = "".join(f'<img loading="lazy" src="assets/{url_map[u]}">' for u in p["images"] if u in url_map)
+        orig = f' · <a href="{esc(p["link"])}">original</a>' if p["link"] else ""
+        cards.append(
+            f'<div class="post" dir="auto"><div class="author">{esc(p["author"])}</div>'
+            f'<div class="when">{esc(p["when"])}{orig}</div>'
+            f'<div class="text">{esc(p["text"])}</div>{imgs}</div>')
     index = root / "index.html"
-    index.write_text(page_html, encoding="utf-8")
+    index.write_text(
+        '<!doctype html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>{esc(title)}</title><style>{_CSS}</style></head><body><div class="wrap">'
+        f'<h1 dir="auto">{esc(title)}</h1><div class="meta">{len(posts)} posts · saved offline'
+        f' · <a href="{esc(page_url)}">original page</a>{videos_note}</div>{"".join(cards)}</div></body></html>',
+        encoding="utf-8")
     log(f"Saved {len(posts)} posts → {index.resolve()}")
     return index
