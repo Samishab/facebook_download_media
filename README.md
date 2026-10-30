@@ -1,4 +1,14 @@
-# Facebook Video Downloader | محمّل فيديوهات فيسبوك
+# Facebook Media Downloader | محمّل وسائط فيسبوك
+
+**GUI:** `python app.py` — pick a mode: download all videos, save the page offline (browse it later without internet), or both.
+**واجهة رسومية:** `python app.py` — اختر: تحميل الفيديوهات، أو حفظ الصفحة أوفلاين للتصفح بدون نت، أو الاثنين.
+
+Offline copy is saved to `<output>/offline/<page>/index.html` (posts, images, styles; optional videos with `videos.html`). Comments are not saved, and Facebook may change its markup, so results can vary.
+النسخة الأوفلاين تُحفظ في `<output>/offline/<page>/index.html` (المنشورات والصور والتنسيق، والفيديوهات اختيارياً). التعليقات لا تُحفظ.
+
+CLI: `python downloader.py URL --cookies cookies.txt --offline` (add `--no-videos`, `--show-browser`).
+
+---
 
 Download all videos from any Facebook profile or page using Playwright + yt-dlp.
 
