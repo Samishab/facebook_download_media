@@ -6,6 +6,7 @@ both the CLI and the GUI can drive it.
 """
 
 import hashlib
+import itertools
 import html as htmllib
 import mimetypes
 import re
@@ -20,6 +21,14 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 VIDEO_HINTS = ("/videos/", "watch?v=", "watch/?v=", "/reel/")
+
+
+PATIENCE = 6  # consecutive scrolls without anything new before we call it the end
+
+
+def _scrolls(max_scrolls):
+    """max_scrolls <= 0 means: keep going until the page stops yielding new items."""
+    return range(max_scrolls) if max_scrolls > 0 else itertools.count()
 
 
 def _noop(*_a, **_k):
@@ -134,7 +143,7 @@ def scrape_video_urls(profile_url, cookies_file=None, max_scrolls=30, headless=T
         page.goto(target, wait_until="domcontentloaded", timeout=45_000)
         page.wait_for_timeout(3_000)
         no_change = prev = 0
-        for i in range(max_scrolls):
+        for i in _scrolls(max_scrolls):
             if stop.is_set():
                 break
             try:
@@ -145,14 +154,14 @@ def scrape_video_urls(profile_url, cookies_file=None, max_scrolls=30, headless=T
                 urls.update(links)
             except Exception:
                 pass
-            progress(i + 1, max_scrolls)
-            log(f"Scroll {i + 1}/{max_scrolls} — {len(urls)} video URLs")
+            progress(i + 1, max_scrolls)  # total 0 = unlimited
+            log(f"Scroll {i + 1}/{max_scrolls or '∞'} — {len(urls)} video URLs")
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             page.wait_for_timeout(2_000)
             no_change = no_change + 1 if len(urls) == prev else 0
             prev = len(urls)
-            if no_change >= 4:
-                log("No new videos after 4 scrolls — stopping scroll.")
+            if no_change >= PATIENCE:
+                log("No new videos after several scrolls — stopping scroll.")
                 break
     return sorted(urls)
 
@@ -304,7 +313,7 @@ def archive_page(page_url, output_dir, cookies_file=None, max_scrolls=40, headle
             pass
 
         no_change = prev = 0
-        for i in range(max_scrolls):
+        for i in _scrolls(max_scrolls):
             if stop.is_set():
                 break
             try:
@@ -320,14 +329,14 @@ def archive_page(page_url, output_dir, cookies_file=None, max_scrolls=40, headle
                     video_links.update(l for l in item["videos"] if any(h in l for h in VIDEO_HINTS))
             except Exception as e:
                 log(f"collect warning: {e}")
-            progress(i + 1, max_scrolls)
-            log(f"Scroll {i + 1}/{max_scrolls} — {len(posts)} posts, {len(url_map)} images")
+            progress(i + 1, max_scrolls)  # total 0 = unlimited
+            log(f"Scroll {i + 1}/{max_scrolls or '∞'} — {len(posts)} posts, {len(url_map)} images")
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             page.wait_for_timeout(2_500)
             no_change = no_change + 1 if len(posts) == prev else 0
             prev = len(posts)
-            if no_change >= 4:
-                log("No new posts after 4 scrolls — done scrolling.")
+            if no_change >= PATIENCE:
+                log("No new posts after several scrolls — done scrolling.")
                 break
         page.wait_for_timeout(1_500)  # let the last images finish
         title = page.title() or _slug(page_url)

@@ -12,7 +12,7 @@ def main():
     parser.add_argument("url", help="Facebook profile or page URL")
     parser.add_argument("-o", "--output", default="downloads", help="Output directory (default: ./downloads)")
     parser.add_argument("--cookies", default=None, help="Path to Netscape cookies.txt file")
-    parser.add_argument("--scrolls", type=int, default=30, help="Max scroll attempts (default: 30)")
+    parser.add_argument("--scrolls", type=int, default=0, help="Max scroll attempts (default: 0 = whole page)")
     parser.add_argument("--offline", action="store_true", help="Save the page as an offline browsable copy")
     parser.add_argument("--no-videos", action="store_true", help="Skip downloading videos")
     parser.add_argument("--show-browser", action="store_true", help="Show the browser window")

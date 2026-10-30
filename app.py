@@ -29,7 +29,7 @@ class App(tk.Tk):
         self.url = tk.StringVar()
         self.cookies = tk.StringVar(value=s.get("cookies", ""))
         self.outdir = tk.StringVar(value=s.get("outdir", str(Path.cwd() / "downloads")))
-        self.scrolls = tk.IntVar(value=s.get("scrolls", 30))
+        self.scrolls = tk.IntVar(value=s.get("scrolls", 0))
         self.show_browser = tk.BooleanVar(value=s.get("show_browser", False))
         self.mode = tk.StringVar(value="videos")
         self.with_videos = tk.BooleanVar(value=True)
@@ -68,8 +68,8 @@ class App(tk.Tk):
 
         row = ttk.Frame(opt)
         row.pack(fill="x", padx=8, pady=4)
-        ttk.Label(row, text="Max scrolls | عدد السكرول").pack(side="left")
-        ttk.Spinbox(row, from_=1, to=1000, width=6, textvariable=self.scrolls).pack(side="left", padx=6)
+        ttk.Label(row, text="Max scrolls (0 = whole page) | عدد السكرول (0 = الصفحة كاملة)").pack(side="left")
+        ttk.Spinbox(row, from_=0, to=100000, width=6, textvariable=self.scrolls).pack(side="left", padx=6)
         ttk.Checkbutton(row, text="Show browser | إظهار المتصفح",
                         variable=self.show_browser).pack(side="left", padx=12)
         ttk.Checkbutton(row, text="Include videos in offline copy | الفيديوهات ضمن النسخة",
@@ -181,7 +181,13 @@ class App(tk.Tk):
                     self.log_box.configure(state="disabled")
                 elif kind == "progress":
                     done, total = val
-                    self.bar.configure(maximum=max(total, 1), value=done)
+                    if total:
+                        self.bar.stop()
+                        self.bar.configure(mode="determinate", maximum=total, value=done)
+                    else:  # unlimited scrolling: no known end, show a busy bar
+                        if str(self.bar.cget("mode")) != "indeterminate":
+                            self.bar.configure(mode="indeterminate")
+                            self.bar.start(15)
                 elif kind == "finished":
                     self.start_btn.configure(state="normal")
                     self.stop_btn.configure(state="disabled")
