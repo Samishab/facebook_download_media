@@ -35,6 +35,7 @@ class App(tk.Tk):
         self.with_videos = tk.BooleanVar(value=True)
 
         self._build()
+        self._enable_clipboard_keys()
         self.after(100, self._pump)
 
     # ── UI ──
@@ -45,7 +46,8 @@ class App(tk.Tk):
         top.columnconfigure(1, weight=1)
 
         ttk.Label(top, text="Profile / Page URL | الرابط").grid(row=0, column=0, sticky="w", padx=6, pady=4)
-        ttk.Entry(top, textvariable=self.url).grid(row=0, column=1, columnspan=2, sticky="ew", padx=6)
+        ttk.Entry(top, textvariable=self.url).grid(row=0, column=1, sticky="ew", padx=6)
+        ttk.Button(top, text="Paste | لصق", command=lambda: self.url.set(self._clip())).grid(row=0, column=2, padx=6)
 
         ttk.Label(top, text="cookies.txt").grid(row=1, column=0, sticky="w", padx=6, pady=4)
         ttk.Entry(top, textvariable=self.cookies).grid(row=1, column=1, sticky="ew", padx=6)
@@ -94,6 +96,34 @@ class App(tk.Tk):
         self.log_box.configure(yscrollcommand=sb.set)
         self.log_box.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
+
+    # ── clipboard (Ctrl+V/C/X fail in Tk when an Arabic layout is active, so match by keycode) ──
+    def _clip(self) -> str:
+        try:
+            return self.clipboard_get().strip()
+        except tk.TclError:
+            return ""
+
+    def _enable_clipboard_keys(self):
+        def on_key(e):
+            if not (e.state & 0x4):  # Ctrl not held
+                return
+            ev = {86: "<<Paste>>", 67: "<<Copy>>", 88: "<<Cut>>", 65: "select"}.get(e.keycode)
+            if ev == "select" and isinstance(e.widget, ttk.Entry):
+                e.widget.select_range(0, "end")
+                return "break"
+            if ev and ev != "select":
+                e.widget.event_generate(ev)
+                return "break"
+
+        def popup(e):
+            m = tk.Menu(self, tearoff=0)
+            for label, ev in (("Cut", "<<Cut>>"), ("Copy", "<<Copy>>"), ("Paste | لصق", "<<Paste>>")):
+                m.add_command(label=label, command=lambda ev=ev: e.widget.event_generate(ev))
+            m.tk_popup(e.x_root, e.y_root)
+
+        self.bind_class("TEntry", "<Key>", on_key, add="+")
+        self.bind_class("TEntry", "<Button-3>", popup, add="+")
 
     # ── helpers ──
     @staticmethod
