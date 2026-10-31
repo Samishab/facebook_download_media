@@ -3,6 +3,9 @@
 **GUI:** `python app.py` — pick a mode: download all videos, save the page offline (browse it later without internet), or both.
 **واجهة رسومية:** `python app.py` — اختر: تحميل الفيديوهات، أو حفظ الصفحة أوفلاين للتصفح بدون نت، أو الاثنين.
 
+**Offline copy extras | إضافات النسخة الأوفلاين:** post dates (read from Facebook's hover tooltip), sort buttons inside the saved page (newest/oldest first — works offline, any time), a wide layout, and PDF export (automatic, or the *Export PDF…* button for any saved copy). CLI: `--order asc|desc`, `--no-dates`, `--pdf`.
+تاريخ كل منشور، أزرار ترتيب (الأحدث/الأقدم) داخل الصفحة المحفوظة، عرض أوسع، وتصدير PDF.
+
 Offline copy is saved to `<output>/offline/<page>/index.html` (posts, images, styles; optional videos with `videos.html`). Comments are not saved, and Facebook may change its markup, so results can vary.
 النسخة الأوفلاين تُحفظ في `<output>/offline/<page>/index.html` (المنشورات والصور والتنسيق، والفيديوهات اختيارياً). التعليقات لا تُحفظ.
 

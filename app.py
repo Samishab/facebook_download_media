@@ -28,6 +28,12 @@ def rtl(text: str) -> str:
     return _AR_RUN.sub(lambda m: " ".join(reversed(m.group(0).split(" "))), text)
 
 
+ORDERS = {
+    "orig": "Page order | ترتيب الصفحة",
+    "desc": "Newest first | الأحدث أولاً",
+    "asc": "Oldest first | الأقدم أولاً",
+}
+
 MODES = [
     ("videos", "🎬  Download all videos", "تحميل كل الفيديوهات"),
     ("offline", "🗂  Save page offline", "حفظ الصفحة للتصفح بدون نت"),
@@ -39,8 +45,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Facebook Media Downloader | محمّل وسائط فيسبوك")
-        self.geometry("880x720")
-        self.minsize(760, 640)
+        self.geometry("920x860")
+        self.minsize(820, 760)
         self.q: queue.Queue = queue.Queue()
         self.stop_ev = threading.Event()
         self.last_index: Path | None = None
@@ -54,6 +60,9 @@ class App(tk.Tk):
         self.dark = tk.BooleanVar(value=s.get("dark", False))
         self.mode = tk.StringVar(value="videos")
         self.with_videos = tk.BooleanVar(value=True)
+        self.with_dates = tk.BooleanVar(value=s.get("with_dates", True))
+        self.make_pdf = tk.BooleanVar(value=s.get("make_pdf", False))
+        self.order = tk.StringVar(value=rtl(ORDERS[s.get("order", "orig")]))
         self.status = tk.StringVar(value=rtl("Ready | جاهز"))
 
         if sv_ttk:
@@ -106,6 +115,17 @@ class App(tk.Tk):
         ttk.Checkbutton(row2, text="Show browser | إظهار المتصفح", variable=self.show_browser).pack(side="left")
         ttk.Checkbutton(row2, text="Include videos in offline copy | الفيديوهات ضمن النسخة",
                         variable=self.with_videos).pack(side="left", padx=20)
+        row3 = ttk.Frame(card)
+        row3.pack(fill="x", pady=(8, 0))
+        ttk.Checkbutton(row3, text="Include post dates | تضمين تاريخ المنشور",
+                        variable=self.with_dates).pack(side="left")
+        ttk.Checkbutton(row3, text="Export PDF after saving | تصدير PDF بعد الحفظ",
+                        variable=self.make_pdf).pack(side="left", padx=20)
+        row4 = ttk.Frame(card)
+        row4.pack(fill="x", pady=(8, 0))
+        ttk.Label(row4, text="Order | الترتيب").pack(side="left")
+        ttk.Combobox(row4, state="readonly", width=26, textvariable=self.order,
+                     values=[rtl(v) for v in ORDERS.values()]).pack(side="left", padx=8)
 
         # actions
         btns = ttk.Frame(root)
@@ -118,6 +138,7 @@ class App(tk.Tk):
                                    command=self._open_offline, state="disabled")
         self.open_btn.pack(side="right", ipady=3)
         ttk.Button(btns, text="Open folder | فتح المجلد", command=self._open_folder).pack(side="right", padx=8, ipady=3)
+        ttk.Button(btns, text="Export PDF… | تصدير PDF", command=self._export_pdf).pack(side="right", ipady=3)
 
         ttk.Label(root, textvariable=self.status, style="Status.TLabel").pack(anchor="w")
         self.bar = ttk.Progressbar(root, mode="determinate")
@@ -188,7 +209,9 @@ class App(tk.Tk):
         try:
             SETTINGS.write_text(json.dumps({
                 "cookies": self.cookies.get(), "outdir": self.outdir.get(), "scrolls": self.scrolls.get(),
-                "show_browser": self.show_browser.get(), "dark": self.dark.get()}), encoding="utf-8")
+                "show_browser": self.show_browser.get(), "dark": self.dark.get(),
+                "with_dates": self.with_dates.get(), "make_pdf": self.make_pdf.get(),
+                "order": self._order_key()}), encoding="utf-8")
         except Exception:
             pass
 
@@ -264,8 +287,33 @@ class App(tk.Tk):
         self.stop_btn.configure(state="normal")
         # read Tk variables here: they must not be touched from the worker thread
         opts = dict(out=self.outdir.get(), mode=self.mode.get(), headless=not self.show_browser.get(),
-                    scrolls=self.scrolls.get(), with_videos=self.with_videos.get())
+                    scrolls=self.scrolls.get(), with_videos=self.with_videos.get(),
+                    with_dates=self.with_dates.get(), make_pdf=self.make_pdf.get(), order=self._order_key())
         threading.Thread(target=self._run, args=(url, cookies, opts), daemon=True).start()
+
+    def _order_key(self) -> str:
+        shown = self.order.get()
+        return next((k for k, v in ORDERS.items() if rtl(v) == shown), "orig")
+
+    def _export_pdf(self):
+        """Turn an already-saved offline copy into a PDF (uses the selected order)."""
+        start = self.last_index.parent if self.last_index else Path(self.outdir.get()) / "offline"
+        path = filedialog.askopenfilename(title="Choose the saved index.html", initialdir=str(start),
+                                          filetypes=[("Saved page", "index.html"), ("HTML", "*.html")])
+        if not path:
+            return
+        order = self._order_key()
+
+        def work():
+            try:
+                fbcore.export_pdf(path, order=None if order == "orig" else order, log=self._log)
+            except Exception as e:
+                self._log(f"ERROR: {e}")
+            finally:
+                self.q.put(("finished", None))
+
+        self.start_btn.configure(state="disabled")
+        threading.Thread(target=work, daemon=True).start()
 
     def _stop(self):
         self.stop_ev.set()
@@ -279,7 +327,8 @@ class App(tk.Tk):
                 self._log("── Offline copy | نسخة أوفلاين ──")
                 self.last_index = fbcore.archive_page(
                     url, Path(o["out"]) / "offline", cookies, o["scrolls"], o["headless"],
-                    with_videos=o["with_videos"] and o["mode"] == "offline", **kw)
+                    with_videos=o["with_videos"] and o["mode"] == "offline", with_dates=o["with_dates"],
+                    order=o["order"], make_pdf=o["make_pdf"], **kw)
             if o["mode"] in ("videos", "both") and not self.stop_ev.is_set():
                 self._log("── Videos | الفيديوهات ──")
                 urls = fbcore.scrape_video_urls(url, cookies, o["scrolls"], o["headless"], **kw)
